@@ -1,0 +1,359 @@
+{
+  "version": 1,
+  "mission": {
+    "defaults": {
+      "horizontalVelocity": 5.0,
+      "maxHeadingRate": 60.0
+    },
+    "items": [
+      {
+        "type": "takeoff"
+      },
+      {
+        "id": "wp000",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": 0.0,
+        "y": 0.0,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp001",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": 8.983111749910169e-05,
+        "y": 8.983111749910169e-05,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp002",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": 8.983111749910169e-05,
+        "y": -8.983111749910169e-05,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp003",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": 8.983111749910169e-05,
+        "y": -0.00026949335249730504,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp004",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": 8.983111749910169e-05,
+        "y": -0.0004491555874955084,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp005",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -8.983111749910169e-05,
+        "y": -0.0004491555874955084,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp006",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.00026949335249730504,
+        "y": -0.0004491555874955084,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp007",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0004491555874955084,
+        "y": -0.0004491555874955084,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp008",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0004491555874955084,
+        "y": -0.00026949335249730504,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp009",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.00026949335249730504,
+        "y": -0.00026949335249730504,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp010",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -8.983111749910169e-05,
+        "y": -0.00026949335249730504,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp011",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -8.983111749910169e-05,
+        "y": -8.983111749910169e-05,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp012",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.00026949335249730504,
+        "y": -8.983111749910169e-05,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp013",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0004491555874955084,
+        "y": -8.983111749910169e-05,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp014",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0006288178224937119,
+        "y": -8.983111749910169e-05,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp015",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0006288178224937119,
+        "y": -0.00026949335249730504,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp016",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0006288178224937119,
+        "y": -0.0004491555874955084,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp017",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0006288178224937119,
+        "y": -0.0006288178224937119,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp018",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0004491555874955084,
+        "y": -0.0006288178224937119,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp019",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.00026949335249730504,
+        "y": -0.0006288178224937119,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp020",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -8.983111749910169e-05,
+        "y": -0.0006288178224937119,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp021",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": 8.983111749910169e-05,
+        "y": -0.0006288178224937119,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp022",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": 8.983111749910169e-05,
+        "y": -0.0008084800574919152,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp023",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -8.983111749910169e-05,
+        "y": -0.0008084800574919152,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp024",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.00026949335249730504,
+        "y": -0.0008084800574919152,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp025",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0004491555874955084,
+        "y": -0.0008084800574919152,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp026",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0006288178224937119,
+        "y": -0.0008084800574919152,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp027",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0008084800574919152,
+        "y": -0.0008084800574919152,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp028",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0008084800574919152,
+        "y": -0.0006288178224937119,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp029",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0008084800574919152,
+        "y": -0.0004491555874955084,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp030",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0008084800574919152,
+        "y": -0.00026949335249730504,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp031",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0008084800574919152,
+        "y": -8.983111749910169e-05,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp032",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0008084800574919152,
+        "y": 8.983111749910169e-05,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp033",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0006288178224937119,
+        "y": 8.983111749910169e-05,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp034",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.0004491555874955084,
+        "y": 8.983111749910169e-05,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp035",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -0.00026949335249730504,
+        "y": 8.983111749910169e-05,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp036",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": -8.983111749910169e-05,
+        "y": 8.983111749910169e-05,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "id": "wp037",
+        "type": "navigation",
+        "navigationType": "waypoint",
+        "x": 0.0,
+        "y": 0.0,
+        "z": 10.0,
+        "frame": "global"
+      },
+      {
+        "type": "rtl"
+      }
+    ]
+  }
+}
