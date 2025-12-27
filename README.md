@@ -35,7 +35,16 @@ source install/local_setup.bash
 ``` bash
 python3 src/px4_uav_patrol/gen_patrol_mission.py <Name of scenario, e.g., 37SquareFarmCorner> --dir-to-tsp <directory of TSP scenario, e.g., src/px4_uav_patrol/scenarios > --dir-to-tour <directory of tour, e.g., src/px4_uav_patrol/tours > --out-dir <directory where you want the PX4 missions>
 ```
-3. In the terminal where you'll the px4 gazebo environment, set the starting coordinates of the drone. You probably want this to match the longitude and latitude of your first waypoint in the mission you wish to run.
+3. Validate the mission json file.
+``` bash
+python -m pip install --user check-jsonschema # If you haven't done this step before
+cd ~/<ros2 workspace>
+python3 -m check_jsonschema \
+  --schemafile ./src/px4-ros2-interface-lib/mission/schema.yaml \
+  <MissionName>.json
+```
+
+4. In the terminal where you'll the px4 gazebo environment, set the starting coordinates of the drone. You probably want this to match the longitude and latitude of your first waypoint in the mission you wish to run.
 ``` bash
 cd ~/PX4-Autopilot
 export PX4_HOME_LAT=<latitude value>
@@ -43,22 +52,22 @@ export PX4_HOME_LON=<longitude value>
 export PX4_HOME_ALT=0
 ```
 
-4. Run PX4 using your windy world:
+5. Run PX4 using your windy world:
 ``` bash
 PX4_GZ_WORLD=<windy world name> make px4_sitl gz_x500
 ```
 
-5. Run the micro XRCE agent in a different terminal:
+6. Run the micro XRCE agent in a different terminal:
 ``` bash
 MicroXRCEAgent udp4 -p 8888
 ```
-6. Source local workspace and run a patrol mission in a different terminal:
+7. Source local workspace and run a patrol mission in a different terminal:
 ``` bash
 cd ~/<ros2 workspace>
 source install/local_setup.bash
 ros2 run px4_uav_patrol patrol_mission   --ros-args   -p mission_file:=<path/to/mission.mission.json>   -p mission_id:=<mission id that will appear in energy log>
 ```
-7. Open QGC, switch to ```Patrol Mission``` mode, and arm the UAV. You should now see the drone take off in Gazebo and see it moving in QGC as it flies through its waypoints. Once it lands, it should update ```energy_log.csv``` with data from its tour.
+8. Open QGC, switch to ```Patrol Mission``` mode, and arm the UAV. You should now see the drone take off in Gazebo and see it moving in QGC as it flies through its waypoints. Once it lands, it should update ```energy_log.csv``` with data from its tour.
 
 
 <img width="942" height="603" alt="LKHDe20n20" src="https://github.com/user-attachments/assets/2545fc9e-2e5d-4b9b-8c8a-57aaa6d556ac" />
