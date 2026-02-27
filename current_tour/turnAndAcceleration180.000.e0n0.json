@@ -1,0 +1,13 @@
+{
+  "name": "turnAndAcceleration180",
+  "comment": "A turn with 3 waypoints where first waypoint is at center and degree of turn is 180 degrees  Cost scaling=100, wind=(0.0, 0.0).",
+  "gtsp_file": "./GLKH-1.1/GTSPLIB/turnAndAcceleration180.gtsp",
+  "cost": 104.76,
+  "tour": [
+    1,
+    2,
+    3
+  ],
+  "saved_at": "2026-2-24T16:33:00Z",
+  "generation_time": 24.89
+}
