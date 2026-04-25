@@ -1,0 +1,3 @@
+[submodule "LKH-DW"]
+	path = LKH-DW
+	url = git@github.com:mariojerez/LKH-DW.git
