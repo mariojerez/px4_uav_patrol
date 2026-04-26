@@ -74,6 +74,7 @@ def gen_patrol_mission(
     scenarioName: str,
     altitude: float,
     groundspeed: float,
+    vertical_speed: float,
     max_heading_rate: float,
     dir_to_tsp: str,
     dir_to_tour: str,
@@ -85,7 +86,7 @@ def gen_patrol_mission(
     """
     Generate a mission (mission.json) that can be executed by PX4 that traverses through all the waypoints from the scenario (TSP file)
     in the order specified by the tour (json file).
-    
+
     TSP convention:
         x = east (meters)
         y = north (meters)
@@ -97,6 +98,7 @@ def gen_patrol_mission(
     :param scenarioName: Name of the scenario a mission is being generated for. Used to find the waypoints (.tsp) file and tour (.json) file.
     :param altitude: Altitude from takeoff location the UAV will remain at.
     :param groundspeed: The target groundspeed of the UAV (independent of windspeed).
+    :param vertical_speed: Target vertical velocity in m/s used by the trajectory executor for altitude transitions between waypoints. Note: this does NOT govern the descent speed during the final RTL/land phase — that is controlled by PX4 firmware parameters (e.g. MPC_LAND_SPEED, MPC_Z_VEL_MAX_DN). See README for details.
     :param max_heading_rate: Restricts how quickly UAV can rotate.
     :param dir_to_tsp: Directory containing the (.TSP) file which has all the waypoints for the scenario.
     :param dir_to_tour: Directory containing the (.json) file containing the order of waypoints to go to.
@@ -159,6 +161,7 @@ def gen_patrol_mission(
         "mission": {
             "defaults": {
                 "horizontalVelocity": groundspeed,
+                "verticalVelocity": vertical_speed,
                 "maxHeadingRate": max_heading_rate
             },
             "items": items
@@ -181,6 +184,18 @@ if __name__ == "__main__":
 
     parser.add_argument("--altitude", type=float, default=10.0)
     parser.add_argument("--groundspeed", type=float, default=5.0)
+    parser.add_argument(
+        "--vertical-speed",
+        type=float,
+        default=0.5,
+        help=(
+            "Target vertical velocity (m/s) for altitude transitions between "
+            "waypoints. Default 0.5 m/s (slow). NOTE: this does NOT control "
+            "the descent speed during the final RTL/landing phase, which is "
+            "governed by PX4 firmware parameters (e.g. MPC_LAND_SPEED, "
+            "MPC_Z_VEL_MAX_DN). See README for details."
+        ),
+    )
     parser.add_argument("--max_heading_rate", type=float, default=60.0)
 
     parser.add_argument(
@@ -202,6 +217,7 @@ if __name__ == "__main__":
         scenarioName=args.scenarioName,
         altitude=args.altitude,
         groundspeed=args.groundspeed,
+        vertical_speed=args.vertical_speed,
         max_heading_rate=args.max_heading_rate,
         dir_to_tsp=args.dir_to_tsp,
         dir_to_tour=args.dir_to_tour,
