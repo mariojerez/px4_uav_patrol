@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
@@ -91,17 +92,37 @@ private:
 
   void handleAccepted(const std::shared_ptr<GoalHandleExecutePatrol> goal_handle)
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    active_goal_handle_ = goal_handle;
+    // Action callbacks run on the rclcpp executor thread. patrol_.start()
+    // blocks for up to 15 s inside px4_ros2::waitForFMU, which would freeze
+    // the single-threaded executor and prevent the freshly-created
+    // VehicleStatus subscription from ever being matched / delivered.
+    // Move the blocking startup to a worker thread so the executor keeps
+    // spinning.
+    std::thread([this, goal_handle]() {
+      std::lock_guard<std::mutex> lock(mutex_);
+      active_goal_handle_ = goal_handle;
 
-    const auto goal = goal_handle->get_goal();
-    std::string error;
-    std::string mission_path = goal->mission_file;
+      const auto goal = goal_handle->get_goal();
+      std::string error;
+      std::string mission_path = goal->mission_file;
 
-    if (!goal->farm_config.empty()) {
-      if (!resolveMissionFromPlanner(*goal, mission_path, error)) {
+      if (!goal->farm_config.empty()) {
+        if (!resolveMissionFromPlanner(*goal, mission_path, error)) {
+          RCLCPP_ERROR(node_->get_logger(),
+            "Failed to resolve mission from planner: %s", error.c_str());
+          auto result = std::make_shared<ExecutePatrol::Result>();
+          result->success = false;
+          result->energy_joules = 0.0f;
+          result->distance_meters = 0.0f;
+          goal_handle->abort(result);
+          active_goal_handle_.reset();
+          return;
+        }
+      }
+
+      if (!patrol_.start(mission_path, error)) {
         RCLCPP_ERROR(node_->get_logger(),
-          "Failed to resolve mission from planner: %s", error.c_str());
+          "Failed to start patrol: %s", error.c_str());
         auto result = std::make_shared<ExecutePatrol::Result>();
         result->success = false;
         result->energy_joules = 0.0f;
@@ -110,19 +131,7 @@ private:
         active_goal_handle_.reset();
         return;
       }
-    }
-
-    if (!patrol_.start(mission_path, error)) {
-      RCLCPP_ERROR(node_->get_logger(),
-        "Failed to start patrol: %s", error.c_str());
-      auto result = std::make_shared<ExecutePatrol::Result>();
-      result->success = false;
-      result->energy_joules = 0.0f;
-      result->distance_meters = 0.0f;
-      goal_handle->abort(result);
-      active_goal_handle_.reset();
-      return;
-    }
+    }).detach();
   }
 
   // Synchronously call the patrol planner to obtain a mission file path.
