@@ -108,24 +108,44 @@ except (FileNotFoundError, ValueError, json.JSONDecodeError):
     DEFAULT_ORIGIN_LAT = _FALLBACK_ORIGIN_LAT
     DEFAULT_ORIGIN_LON = _FALLBACK_ORIGIN_LON
 
-# Defaults are taken from the calibration plan so that callers without an
-# override still produce the same mission set.
-DEFAULT_N_TRIALS = 7
+# Defaults sized for a fast-but-statistically-sufficient SITL run. The
+# previous defaults (n_trials=7, warmup=30 m, cooldown=30 m, 5 turn angles,
+# 250 m turn cells) put the suite at ~3.5 h wall-clock. The smaller numbers
+# below cut that to ~50 min while still pinning each fitted parameter with
+# enough samples — see docs/energy_calibration.md for the rationale.
+DEFAULT_N_TRIALS = 4
 DEFAULT_ALTITUDE_M = 10.0
 DEFAULT_HOVER_DURATION_S = 25.0
-DEFAULT_WARMUP_M = 30.0
+DEFAULT_WARMUP_M = 15.0
 DEFAULT_STRAIGHT_LINE_M = 50.0
-DEFAULT_COOLDOWN_M = 30.0
+DEFAULT_COOLDOWN_M = 10.0
 DEFAULT_TURN_LEG_M = 20.0
-DEFAULT_SPEEDS_MPS = (2.0, 4.0, 6.0, 8.0, 10.0)
-DEFAULT_TURN_VG_MPS = (2.0, 4.0, 6.0)
+# Commanded straight-line speeds are pushed past the PX4 SITL trajectory
+# smoother's effective cap (~7-8 m/s with stock MPC_JERK_AUTO) so the
+# drone gets samples spanning the full achievable measured-speed range.
+# Trials whose actual mean speed falls short of the commanded value still
+# count — the fit uses mean_speed_mps (measured), not the commanded
+# value, so a "v=12" trial that actually flew 8.5 m/s is just one more
+# (8.5, P) data point.
+DEFAULT_SPEEDS_MPS = (2.0, 4.0, 6.0, 9.0, 12.0)
+# Single target ground speed: real flights cruise at v_g=5, so calibrate
+# the turn-cost model where it'll actually be used. With three ω values
+# and three Δθ values, each (v_g, ω) group still has three Δθ samples
+# for the linregress, and γ is averaged across the three ω groups.
+DEFAULT_TURN_VG_MPS = (5.0,)
 DEFAULT_TURN_OMEGA = (0.5, 1.0, 1.5)
-DEFAULT_TURN_ANGLES = (0.0, math.pi / 4, math.pi / 2, 3 * math.pi / 4, math.pi)
-DEFAULT_MAX_HEADING_RATE_DEG_S = 60.0  # used for non-turn missions
-
-# PX4 default MPC_ACC_HOR. Keep in sync with the SITL's value or pass via
-# arg if your airframe has been retuned.
-DEFAULT_MPC_ACC_HOR_MPS2 = 3.0
+# Drop π/4 and 3π/4 — (0, π/2, π) still pins the slope of E_turn(Δθ).
+DEFAULT_TURN_ANGLES = (0.0, math.pi / 2, math.pi)
+DEFAULT_TURN_CELL_M = 100.0
+# Yaw rate cap for the straight-line legs. Picked high enough that a 180°
+# flip between alternating-direction trials completes within the 30 m warmup
+# zone at every calibration speed (180 deg/s -> 1 s for 180°, vs. ~3 s at
+# v=10 m/s warmup), so the measurement window always sees the drone facing
+# its direction of travel — matching how a normal PX4 waypoint mission
+# flies. Stays comfortably below PX4's `MC_YAWRATE_MAX` default (220 deg/s).
+# Turn missions override this with `math.degrees(omega_rad_s)` so the j-yaw
+# happens at the test's prescribed rate, not this cap.
+DEFAULT_MAX_HEADING_RATE_DEG_S = 180.0
 
 # Per-trial speed sanity check tolerance in m/s. Trials whose mean speed
 # deviates from the target by more than this are excluded from the fit.
@@ -146,33 +166,50 @@ def _waypoint_global(
     lat0: float, lon0: float,
 ) -> Dict:
     lat, lon = local_to_global(x_m, y_m, lat0, lon0)
+    # In px4_ros2's mission schema with `frame: global`, the coordinate
+    # ordering matches PX4's MapProjection: x = latitude (deg), y =
+    # longitude (deg). See map_projection_impl.cpp:30-31, where
+    # globalToLocal reads `lat_rad = degToRad(pos.x())` and
+    # `lon_rad = degToRad(pos.y())`. Swapping x/y here produces a
+    # wildly-out-of-range target (the drone tries to fly to local NED
+    # millions of metres away) and the mission never completes.
     return {
         "id": point_id,
         "type": "navigation",
         "navigationType": "waypoint",
         "frame": "global",
-        "x": lon,    # mission schema: x = longitude (deg)
-        "y": lat,    # mission schema: y = latitude (deg)
+        "x": lat,
+        "y": lon,
         "z": float(alt_m),
     }
 
 
 def _adaptive_turn_hold_s(
-    v_g_mps: float, omega_rad_s: float, delta_theta_rad: float,
-    mpc_acc_hor_mps2: float = DEFAULT_MPC_ACC_HOR_MPS2,
-    safety_margin_s: float = 1.0,
-    floor_s: float = 2.0,
+    omega_rad_s: float, delta_theta_rad: float,
+    safety_margin_s: float = 0.3,
+    floor_s: float = 0.8,
 ) -> float:
-    """Return the hold-duration that lets the drone fully decelerate from v_g
-    and yaw by delta_theta at omega before the next waypoint becomes active.
+    """Return the hold-duration sized to the yaw alone.
 
-    Decel time: ~v_g / acc (linear deceleration model).
-    Yaw time:   delta_theta / omega.
-    Plus a safety margin and a floor so even Δθ=0 holds long enough to settle.
+    PX4's smooth-pass behaviour decelerates BEFORE reaching j (because the
+    next mission item is `hold`), so the drone is at zero speed by the time
+    the hold starts — there is no decel-during-hold to budget for. The hold
+    only needs to be long enough for the j-yaw to complete plus a small
+    margin for the next waypoint command to take effect.
+
+    The earlier formula added v_g / mpc_acc_hor (≈1.7 s at v_g=5) plus a 1 s
+    margin, which inflated hold_s to ~2.7 s + Δθ/ω. That extra constant
+    hover time added energy that was attributed to the turn (shifts E_acc
+    upward) and made the j-hold-hover-during-yaw bias worse to diagnose.
+    Dropping it isolates the yaw to within ±0.3 s of its theoretical
+    duration.
+
+    The floor is small (0.8 s) so the Δθ=0 trial still has a clean stop
+    -then-go signature that matches the description's "briefly stopped"
+    E_acc experiment.
     """
-    decel_s = v_g_mps / max(mpc_acc_hor_mps2, 1e-6)
     yaw_s = delta_theta_rad / max(omega_rad_s, 1e-6)
-    return max(floor_s, decel_s + yaw_s + safety_margin_s)
+    return max(floor_s, yaw_s + safety_margin_s)
 
 
 # ---------------------------------------------------------------------------
@@ -187,10 +224,12 @@ def gen_hover_mission(
     origin_lat: float = DEFAULT_ORIGIN_LAT,
     origin_lon: float = DEFAULT_ORIGIN_LON,
     speed_tolerance_mps: float = DEFAULT_SPEED_TOLERANCE_MPS,
+    with_takeoff: bool = True,
+    with_rtl: bool = True,
 ) -> Tuple[Dict, Dict]:
     """Build the hover mission + meta.
 
-    Layout (item indices in parens):
+    Layout when with_takeoff=True and with_rtl=True (item indices in parens):
         takeoff (0)
         changeSettings (1)
         For trial 0..n-1:
@@ -199,13 +238,29 @@ def gen_hover_mission(
         waypoint hover_anchor_terminal  (2 + 2*n)      <- snapshot end of last trial
         rtl                             (2 + 2*n + 1)
 
-    Each trial's leg is [start_idx = 2 + 2*t, end_idx = 2 + 2*(t+1)].
+    Each trial's leg is [start_idx = (changeSettings_idx+1) + 2*t,
+                         end_idx   = (changeSettings_idx+1) + 2*(t+1)].
+
+    When `with_takeoff=False`, the leading takeoff item is omitted (drone is
+    expected to already be airborne in HOLD between calibration missions).
+    When `with_rtl=False`, the trailing rtl is omitted (drone hovers at the
+    terminal anchor; subsequent missions release patrol authority via a
+    HOLD-mode switch in Patrol::start, then re-engage Patrol). This keeps
+    the drone in the air across the whole calibration suite, avoiding the
+    PX4 mode-unregister-on-landing cascade. See gen_all() for the
+    first/middle/last selection.
 
     horizontalVelocity is set to a small positive value (0.5 m/s) — PX4
     rejects zero — and maxHeadingRate is set to 0 so the drone does not yaw
-    during hover (yaw motion would contaminate P_hover).
+    during hover. The drone is stationary so there is no direction of travel
+    to face anyway, and any incidental yaw would contaminate P_hover.
+    Straight-line and turn missions raise the cap (see
+    DEFAULT_MAX_HEADING_RATE_DEG_S) so the drone yaws toward each waypoint
+    and faces its direction of travel during the measurement window.
     """
-    items: List[Dict] = [{"type": "takeoff"}]
+    items: List[Dict] = []
+    if with_takeoff:
+        items.append({"type": "takeoff"})
     items.append({
         "type": "changeSettings",
         "horizontalVelocity": 0.5,
@@ -233,7 +288,8 @@ def gen_hover_mission(
         "hover_anchor_terminal", 0.0, 0.0, altitude_m,
         origin_lat, origin_lon,
     ))
-    items.append({"type": "rtl"})
+    if with_rtl:
+        items.append({"type": "rtl"})
 
     mission = {
         "version": 1,
@@ -271,6 +327,8 @@ def gen_straight_line_mission(
     origin_lat: float = DEFAULT_ORIGIN_LAT,
     origin_lon: float = DEFAULT_ORIGIN_LON,
     speed_tolerance_mps: float = DEFAULT_SPEED_TOLERANCE_MPS,
+    with_takeoff: bool = True,
+    with_rtl: bool = True,
 ) -> Tuple[Dict, Dict]:
     """Build a single-speed straight-line mission + meta.
 
@@ -288,8 +346,13 @@ def gen_straight_line_mission(
     is cooldown_end_t (a navigation/waypoint, smooth pass-through), so the
     drone is at v during the entire snapshot — deceleration only kicks in
     once cooldown_end_t is followed by a `hold`.
+
+    `with_takeoff` / `with_rtl` are False for middle missions in a calibration
+    suite — the drone stays airborne across mission transitions, see gen_all().
     """
-    items: List[Dict] = [{"type": "takeoff"}]
+    items: List[Dict] = []
+    if with_takeoff:
+        items.append({"type": "takeoff"})
     items.append({
         "type": "changeSettings",
         "horizontalVelocity": float(speed_mps),
@@ -328,9 +391,14 @@ def gen_straight_line_mission(
             origin_lat, origin_lon,
         ))
 
+        # MissionExecutor's trajectory callback advances current_index to N+1
+        # *after* the drone reaches waypoint N (mission_executor.cpp:739),
+        # so onProgressTick(N+1) is the "drone reached waypoint N" event for
+        # the EnergyLogger. The snapshot starts when the drone reaches
+        # warmup_end and ends when it reaches meas_end.
         legs.append({
-            "start_idx": warmup_end_idx,
-            "end_idx": warmup_end_idx + 1,  # meas_end is the next item
+            "start_idx": warmup_end_idx + 1,  # fires when drone reaches warmup_end
+            "end_idx": warmup_end_idx + 2,    # fires when drone reaches meas_end
             "trial_id": f"v{int(round(speed_mps)):02d}_t{t:02d}",
             "condition": {
                 "experiment": "straight_line",
@@ -342,7 +410,8 @@ def gen_straight_line_mission(
             "expected_speed_mps": float(speed_mps),
         })
 
-    items.append({"type": "rtl"})
+    if with_rtl:
+        items.append({"type": "rtl"})
 
     mission = {
         "version": 1,
@@ -378,12 +447,13 @@ def gen_turn_mission(
     warmup_m: float = DEFAULT_WARMUP_M,
     leg_m: float = DEFAULT_TURN_LEG_M,
     cooldown_m: float = DEFAULT_COOLDOWN_M,
-    cell_x_m: float = 250.0,
-    cell_y_m: float = 250.0,
-    mpc_acc_hor_mps2: float = DEFAULT_MPC_ACC_HOR_MPS2,
+    cell_x_m: float = DEFAULT_TURN_CELL_M,
+    cell_y_m: float = DEFAULT_TURN_CELL_M,
     origin_lat: float = DEFAULT_ORIGIN_LAT,
     origin_lon: float = DEFAULT_ORIGIN_LON,
     speed_tolerance_mps: float = DEFAULT_SPEED_TOLERANCE_MPS,
+    with_takeoff: bool = True,
+    with_rtl: bool = True,
 ) -> Tuple[Dict, Dict]:
     """Build a single-(v_g, omega) turn mission with all 5 angles × n_trials.
 
@@ -407,7 +477,9 @@ def gen_turn_mission(
 
     The intercept E_acc absorbs any constant offset in the model.
     """
-    items: List[Dict] = [{"type": "takeoff"}]
+    items: List[Dict] = []
+    if with_takeoff:
+        items.append({"type": "takeoff"})
     items.append({
         "type": "changeSettings",
         "horizontalVelocity": float(v_g_mps),
@@ -421,10 +493,9 @@ def gen_turn_mission(
             x0 = a * cell_x_m
             y0 = t * cell_y_m
 
-            # Adaptive hold so decel + yaw fit before the next item activates.
-            hold_s = _adaptive_turn_hold_s(
-                v_g_mps, omega_rad_s, delta_theta, mpc_acc_hor_mps2,
-            )
+            # Adaptive hold sized to yaw_s + 0.3 s margin (decel happens before
+            # the hold, not during it, so it is not budgeted here).
+            hold_s = _adaptive_turn_hold_s(omega_rad_s, delta_theta)
 
             # Warmup_start: drone is at rest after the preceding hold.
             items.append({"type": "hold", "duration": 1.0})
@@ -467,11 +538,30 @@ def gen_turn_mission(
             # Note: warmup is BEFORE i, and the snapshot starts at i, so the
             # warmup distance is NOT in the snapshot.
             expected_d = 2 * leg_m + cooldown_m
-            expected_v = float(v_g_mps)
+            # The snapshot contains the j-hold (drone stationary for hold_s)
+            # in addition to the cruise distance, so the actual mean speed
+            # is d_pred / (cruise_time + hold_time), NOT v_g. Use the
+            # geometry-aware expected speed for the speed_check; otherwise
+            # legitimate runs FAIL just because they include the planned
+            # stop at j (especially low ω with high Δθ, where hold_s ~8 s
+            # at v_g=2 pulls v_mean below the ±0.3 tolerance band of v_g).
+            expected_v = expected_d / (
+                expected_d / max(float(v_g_mps), 1e-6) + float(hold_s)
+            )
 
+            # i_idx is the index of the i waypoint; the warmup waypoint at
+            # warmup_idx coincides with i in space, so when the drone reaches
+            # warmup_idx the trajectory callback fires onProgressTick(i_idx)
+            # (= warmup_idx + 1) — that's the "drone at i" event that should
+            # start the snapshot. The end fires when drone reaches
+            # cooldown_end (= cool_idx); onProgressTick(cool_idx + 1) is that
+            # event. For the very last trial of a middle mission (no rtl),
+            # cool_idx + 1 == items.size(), so _on_progress_update doesn't
+            # fire — Patrol::onCompleted calls energy_logger->flushActiveLeg
+            # to close the leg in that case.
             legs.append({
-                "start_idx": i_idx,        # snapshot starts at i (smooth pass at v_g)
-                "end_idx": cool_idx,       # snapshot ends at cooldown_end (smooth pass at v_g)
+                "start_idx": i_idx,            # fires when drone reaches warmup_end (== i)
+                "end_idx": cool_idx + 1,       # fires when drone reaches cooldown_end
                 "trial_id": f"vg{int(round(v_g_mps)):02d}_w{omega_rad_s:.1f}_a{a}_t{t:02d}",
                 "condition": {
                     "experiment": "turn",
@@ -490,7 +580,8 @@ def gen_turn_mission(
                 "expected_speed_mps": expected_v,
             })
 
-    items.append({"type": "rtl"})
+    if with_rtl:
+        items.append({"type": "rtl"})
 
     omega_str = f"{omega_rad_s:.1f}".replace(".", "p")
     mission = {
@@ -529,7 +620,9 @@ def gen_all(
     speed_tolerance_mps: float = DEFAULT_SPEED_TOLERANCE_MPS,
     origin_lat: float = DEFAULT_ORIGIN_LAT,
     origin_lon: float = DEFAULT_ORIGIN_LON,
+    max_heading_rate_deg_s: float = DEFAULT_MAX_HEADING_RATE_DEG_S,
     csv_dir: str = None,
+    start_at: str = "",
 ) -> List[Dict]:
     """Emit every mission in the suite under output_dir/.
 
@@ -561,55 +654,76 @@ def gen_all(
             "experiment": experiment,
         })
 
-    # 1. Hover
-    hover_csv = str(csv_dir / "hover.csv")
-    mission, meta = gen_hover_mission(
-        n_trials=n_trials,
-        csv_path=hover_csv,
-        altitude_m=altitude_m,
-        hover_duration_s=hover_duration_s,
-        origin_lat=origin_lat,
-        origin_lon=origin_lon,
-        speed_tolerance_mps=speed_tolerance_mps,
-    )
-    _write_pair("hover", mission, meta, "hover")
-
-    # 2. Straight-line (one mission per speed)
+    # We chain the 15 missions across one continuous flight: only the first
+    # mission has a takeoff and only the last has an rtl. Middle missions
+    # leave the drone hovering at their last waypoint; Patrol::start
+    # releases the executor authority via a HOLD-mode switch and re-engages
+    # the Patrol mode for the next mission. This avoids the
+    # land-disarm-PX4-unregisters-our-mode cascade that crashes the node.
+    # Build the (kind, args) list first so we know which is first/last.
+    plan: List[Tuple[str, str, Dict]] = []  # (kind, name, kwargs)
+    plan.append(("hover", "hover", {
+        "n_trials": n_trials,
+        "csv_path": str(csv_dir / "hover.csv"),
+        "altitude_m": altitude_m,
+        "hover_duration_s": hover_duration_s,
+        "origin_lat": origin_lat,
+        "origin_lon": origin_lon,
+        "speed_tolerance_mps": speed_tolerance_mps,
+    }))
     straight_csv = str(csv_dir / "straight_line.csv")
     for v in speeds:
-        mission, meta = gen_straight_line_mission(
-            speed_mps=v,
-            n_trials=n_trials,
-            csv_path=straight_csv,
-            altitude_m=altitude_m,
-            origin_lat=origin_lat,
-            origin_lon=origin_lon,
-            speed_tolerance_mps=speed_tolerance_mps,
-        )
-        _write_pair(
-            f"straight_line_v{int(round(v)):02d}", mission, meta, "straight_line",
-        )
-
-    # 3. Turn (one mission per (v_g, omega) combination)
+        plan.append(("straight_line",
+                     f"straight_line_v{int(round(v)):02d}", {
+            "speed_mps": v,
+            "n_trials": n_trials,
+            "csv_path": straight_csv,
+            "altitude_m": altitude_m,
+            "max_heading_rate_deg_s": max_heading_rate_deg_s,
+            "origin_lat": origin_lat,
+            "origin_lon": origin_lon,
+            "speed_tolerance_mps": speed_tolerance_mps,
+        }))
     turn_csv = str(csv_dir / "turns.csv")
     for v_g in turn_v_g:
         for omega in turn_omega:
-            mission, meta = gen_turn_mission(
-                v_g_mps=v_g,
-                omega_rad_s=omega,
-                n_trials=n_trials,
-                turn_angles_rad=turn_angles,
-                csv_path=turn_csv,
-                altitude_m=altitude_m,
-                origin_lat=origin_lat,
-                origin_lon=origin_lon,
-                speed_tolerance_mps=speed_tolerance_mps,
-            )
             omega_str = f"{omega:.1f}".replace(".", "p")
-            _write_pair(
-                f"turn_vg{int(round(v_g)):02d}_omega{omega_str}",
-                mission, meta, "turn",
+            plan.append(("turn",
+                         f"turn_vg{int(round(v_g)):02d}_omega{omega_str}", {
+                "v_g_mps": v_g,
+                "omega_rad_s": omega,
+                "n_trials": n_trials,
+                "turn_angles_rad": turn_angles,
+                "csv_path": turn_csv,
+                "altitude_m": altitude_m,
+                "origin_lat": origin_lat,
+                "origin_lon": origin_lon,
+                "speed_tolerance_mps": speed_tolerance_mps,
+            }))
+
+    if start_at:
+        names = [n for _, n, _ in plan]
+        if start_at not in names:
+            raise ValueError(
+                f"--start-at {start_at!r} not in plan. Available: {names}"
             )
+        plan = plan[names.index(start_at):]
+
+    gen_fn = {
+        "hover": gen_hover_mission,
+        "straight_line": gen_straight_line_mission,
+        "turn": gen_turn_mission,
+    }
+    # The drone is on the ground at the start of the first remaining mission
+    # and lands at the end of the last, regardless of where in the suite we
+    # resume from.
+    for i, (kind, name, kwargs) in enumerate(plan):
+        with_takeoff = (i == 0)
+        with_rtl = (i == len(plan) - 1)
+        mission, meta = gen_fn[kind](
+            with_takeoff=with_takeoff, with_rtl=with_rtl, **kwargs,
+        )
+        _write_pair(name, mission, meta, kind)
 
     # Manifest
     manifest_path = out / "missions" / "calibration_manifest.json"
@@ -671,6 +785,27 @@ def main():
         "--origin-lon", type=float, default=None,
         help="Override the longitude extracted from --domain-config.",
     )
+    parser.add_argument(
+        "--max-heading-rate-deg-s", type=float,
+        default=DEFAULT_MAX_HEADING_RATE_DEG_S,
+        help=(
+            "Yaw-rate cap (deg/s) used for straight-line missions. The drone "
+            "yaws toward each waypoint at up to this rate so it enters the "
+            "measurement window already facing direction of travel "
+            f"(default {DEFAULT_MAX_HEADING_RATE_DEG_S}). Hover stays at 0 "
+            "(stationary) and turn missions use the test's prescribed ω."
+        ),
+    )
+    parser.add_argument(
+        "--start-at", default="",
+        help=(
+            "Resume the suite from this mission name (e.g. "
+            "'turn_vg02_omega1p5'). Earlier missions are skipped on the "
+            "assumption their CSV rows already exist from a previous run. "
+            "Takeoff and rtl are re-attached to the new first/last "
+            "missions. Default: run the full suite."
+        ),
+    )
     args = parser.parse_args()
 
     if (args.origin_lat is None) != (args.origin_lon is None):
@@ -691,6 +826,8 @@ def main():
         hover_duration_s=args.hover_duration,
         origin_lat=origin_lat,
         origin_lon=origin_lon,
+        max_heading_rate_deg_s=args.max_heading_rate_deg_s,
+        start_at=args.start_at,
     )
     print(f"Generated {len(manifest)} missions under {args.output_dir}/missions/")
     for entry in manifest:

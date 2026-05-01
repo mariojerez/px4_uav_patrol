@@ -92,19 +92,28 @@ def fit_straight_line(
 ) -> Dict:
     """Fit P_translate(v) = lambda_1 v² + lambda_2 v + P_hover.
 
-    Each trial contributes one point: (v, mean_power_w). Hover trials are
-    treated as v=0 points using their mean_power_w.
+    Each trial contributes one point: (v_measured, mean_power_w). Hover
+    trials are treated as v=0 points using their mean_power_w. Using the
+    measured speed (not the commanded one) means PX4 SITL trials that fell
+    short of their commanded v_g still contribute a valid (v, P) sample at
+    their actual cruise speed — without this, the v ≥ 6 m/s rows that hit
+    the SITL speed cap would have to be tossed, leaving too few speed
+    samples to fit curvature.
     """
-    points: List[Tuple[float, float, float, float]] = []  # (v, P, V_mean, n)
+    # Each entry: (v_measured, P, V, commanded_v) — commanded_v keeps the
+    # per-speed diagnostic grouping intuitive even though the fit uses
+    # measured speeds.
+    points: List[Tuple[float, float, float, float]] = []
     for row in straight_rows:
-        v = float(row["condition"]["speed_mps"])
+        v_meas = float(row["mean_speed_mps"])
+        v_cmd = float(row["condition"]["speed_mps"])
         p = float(row["mean_power_w"])
         V = float(row["mean_voltage_v"])
-        points.append((v, p, V, 1))
+        points.append((v_meas, p, V, v_cmd))
     for row in hover_rows:
         p = float(row["mean_power_w"])
         V = float(row["mean_voltage_v"])
-        points.append((0.0, p, V, 1))
+        points.append((0.0, p, V, 0.0))
 
     if not points:
         raise RuntimeError("No straight-line + hover data to fit")
@@ -112,23 +121,32 @@ def fit_straight_line(
     v_arr = np.array([p[0] for p in points])
     p_arr = np.array([p[1] for p in points])
 
-    # Compute per-speed mean and std for sigma weighting.
-    unique_v = sorted(set(v_arr.tolist()))
+    # Per-commanded-speed diagnostic table (grouping each commanded v_g's
+    # trials together so a human reader can sanity-check that, e.g., v_g=10
+    # actually flew at ~7.7 m/s in SITL). The sigma used for curve_fit
+    # weighting is also derived from this grouping — points within the
+    # same commanded-speed bucket share a power std-error.
+    unique_v_cmd = sorted({pt[3] for pt in points})
     sigma = np.empty_like(p_arr)
     per_speed_diag = []
-    for v in unique_v:
-        mask = v_arr == v
+    for v_cmd in unique_v_cmd:
+        mask = np.array([pt[3] == v_cmd for pt in points])
         n = int(mask.sum())
         mean_p = float(p_arr[mask].mean())
         std_p = float(p_arr[mask].std(ddof=1)) if n > 1 else 0.0
-        # SE = std / sqrt(n)
         se_p = std_p / math.sqrt(n) if n > 0 else 1.0
-        # Avoid zero sigma (would make curve_fit unstable).
         sigma[mask] = max(se_p, 1.0)
-        mean_v = float(np.array([pt[2] for pt in points if pt[0] == v]).mean())
+        mean_v_meas = float(v_arr[mask].mean())
+        mean_voltage = float(np.array(
+            [pt[2] for pt in points if pt[3] == v_cmd]
+        ).mean())
         per_speed_diag.append({
-            "v": v, "n": n, "mean_power_w": mean_p, "std_power_w": std_p,
-            "mean_voltage_v": mean_v,
+            "v_commanded": v_cmd,
+            "v_mean_measured": mean_v_meas,
+            "n": n,
+            "mean_power_w": mean_p,
+            "std_power_w": std_p,
+            "mean_voltage_v": mean_voltage,
         })
 
     popt, pcov = scipy.optimize.curve_fit(
@@ -193,10 +211,21 @@ def fit_turn(
         omega = float(cond["omega_rad_s"])
         delta = float(cond["delta_theta_rad"])
         d_pred = float(cond["predicted_straight_line_m"])
+        hold_s = float(cond.get("hold_duration_s", 0.0))
         e_total = float(row["energy_j"])
 
-        # The model's predicted straight-line cost (per the description).
-        e_predicted_straight = p_translate(v_g) * d_pred / max(v_g, 1e-6)
+        # Subtract the straight-line component based on the trial's actual
+        # cruise speed (not the commanded v_g). The drone is stationary
+        # during the j-hold, so the cruise portion of the snapshot covers
+        # `distance_m` over `duration_s - hold_s`. PX4 SITL routinely caps
+        # actual cruise below commanded v_g; using v_cruise_actual makes
+        # the subtraction physically correct in that case and unchanged
+        # when v_cruise_actual ≈ v_g.
+        distance_m = float(row["distance_m"])
+        duration_s = float(row["duration_s"])
+        cruise_time = max(duration_s - hold_s, 1e-6)
+        v_cruise = distance_m / cruise_time
+        e_predicted_straight = p_translate(v_cruise) * distance_m / max(v_cruise, 1e-6)
         e_turn = e_total - e_predicted_straight
 
         key = (v_g, omega)
@@ -205,11 +234,23 @@ def fit_turn(
     per_group = []
     e_accs = []
     gammas = []
+    skipped = []
     for (v_g, omega), pairs in sorted(groups.items()):
-        if len(pairs) < 2:
-            continue
         deltas = np.array([p[0] for p in pairs])
         e_turns = np.array([p[1] for p in pairs])
+        n_distinct_deltas = len(set(deltas.tolist()))
+        if n_distinct_deltas < 2:
+            skipped.append({
+                "v_g": float(v_g),
+                "omega": float(omega),
+                "n": int(len(pairs)),
+                "n_distinct_deltas": n_distinct_deltas,
+                "reason": (
+                    "Need ≥2 distinct Δθ values to fit E_acc + γ·Δθ; only "
+                    f"{n_distinct_deltas} survived the speed_check filter."
+                ),
+            })
+            continue
         slope, intercept, r, _, stderr = scipy.stats.linregress(deltas, e_turns)
         per_group.append({
             "v_g": float(v_g),
@@ -238,6 +279,7 @@ def fit_turn(
             gamma_arr.std(ddof=1) / gamma_arr.mean()
         ) if len(gamma_arr) > 1 and gamma_arr.mean() != 0 else 0.0,
         "per_group": per_group,
+        "skipped_groups": skipped,
     }
 
 
@@ -250,23 +292,27 @@ def _make_p_translate_plot(
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(7, 5))
-    points = []
-    for row in straight_rows:
-        points.append((float(row["condition"]["speed_mps"]),
-                       float(row["mean_power_w"])))
-    for row in hover_rows:
-        points.append((0.0, float(row["mean_power_w"])))
-    if points:
-        v = np.array([p[0] for p in points])
-        p = np.array([p[1] for p in points])
-        ax.scatter(v, p, alpha=0.5, label="trials", color="tab:blue")
-    v_grid = np.linspace(0, 11, 100)
+    sl_v = np.array([float(r["mean_speed_mps"]) for r in straight_rows])
+    sl_p = np.array([float(r["mean_power_w"]) for r in straight_rows])
+    sl_cmd = np.array([float(r["condition"]["speed_mps"]) for r in straight_rows])
+    hv_p = np.array([float(r["mean_power_w"]) for r in hover_rows])
+    if sl_v.size:
+        ax.scatter(sl_v, sl_p, alpha=0.6, label="straight-line trials (measured v)",
+                   color="tab:blue")
+        for v_meas, p_w, v_cmd in zip(sl_v, sl_p, sl_cmd):
+            ax.annotate(f"cmd={v_cmd:.0f}", (v_meas, p_w), fontsize=7,
+                        xytext=(3, 3), textcoords="offset points", alpha=0.6)
+    if hv_p.size:
+        ax.scatter(np.zeros_like(hv_p), hv_p, alpha=0.6, marker="s",
+                   label="hover trials (v=0)", color="tab:orange")
+    v_max = float(max(sl_v.max() if sl_v.size else 0.0, 1.0)) + 1.0
+    v_grid = np.linspace(0, v_max, 100)
     p_pred = (
         fit["lambda_1"] * v_grid ** 2
         + fit["lambda_2"] * v_grid + fit["P_hover"]
     )
     ax.plot(v_grid, p_pred, "r-", linewidth=2, label="fit")
-    ax.set_xlabel("airspeed v (m/s)")
+    ax.set_xlabel("measured airspeed v (m/s)")
     ax.set_ylabel("P_translate (W)")
     ax.set_title(
         f"P(v) = {fit['lambda_1']:.3f} v² + {fit['lambda_2']:.3f} v + {fit['P_hover']:.1f}"
@@ -274,6 +320,49 @@ def _make_p_translate_plot(
     )
     ax.legend()
     ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
+def _make_hover_plot(hover_rows: List[Dict], fit: Dict, out_path: Path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if not hover_rows:
+        return
+
+    powers = np.array([float(r["mean_power_w"]) for r in hover_rows])
+    voltages = np.array([float(r["mean_voltage_v"]) for r in hover_rows])
+    durations = np.array([float(r["duration_s"]) for r in hover_rows])
+    trials = np.arange(len(hover_rows))
+    mean_p = float(powers.mean())
+    std_p = float(powers.std(ddof=1)) if len(powers) > 1 else 0.0
+
+    fig, (ax_p, ax_v) = plt.subplots(2, 1, figsize=(7, 6), sharex=True)
+    ax_p.scatter(trials, powers, color="tab:orange", label="trial mean power")
+    ax_p.axhline(mean_p, color="tab:red", linestyle="-", linewidth=1.5,
+                 label=f"mean = {mean_p:.2f} W")
+    ax_p.axhline(fit["P_hover"], color="tab:blue", linestyle="--", linewidth=1.5,
+                 label=f"P_hover (fit) = {fit['P_hover']:.2f} W")
+    if std_p > 0:
+        ax_p.axhspan(mean_p - std_p, mean_p + std_p, color="tab:red", alpha=0.10,
+                     label=f"±1σ ({std_p:.2f} W)")
+    ax_p.set_ylabel("mean power (W)")
+    ax_p.set_title(
+        f"Hover trials: mean = {mean_p:.2f} ± {std_p:.2f} W"
+        f"  (n = {len(hover_rows)}, mean duration = {durations.mean():.1f} s)"
+    )
+    ax_p.legend(fontsize=8)
+    ax_p.grid(True, alpha=0.3)
+
+    ax_v.scatter(trials, voltages, color="tab:purple")
+    ax_v.set_xlabel("trial index")
+    ax_v.set_ylabel("mean battery voltage (V)")
+    ax_v.grid(True, alpha=0.3)
+
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=120)
@@ -295,16 +384,24 @@ def _make_e_turn_plot(
     def p_translate(v):
         return l1 * v * v + l2 * v + p_h
 
-    # Compute E_turn per row
+    # Compute E_turn per row using the same formula fit_turn() uses, so the
+    # scatter dots are consistent with the regression line.
     points: Dict[Tuple[float, float], List[Tuple[float, float]]] = {}
     for row in turn_rows:
         cond = row["condition"]
         v_g = float(cond["v_g_mps"])
         omega = float(cond["omega_rad_s"])
         delta = float(cond["delta_theta_rad"])
-        d_pred = float(cond["predicted_straight_line_m"])
+        hold_s = float(cond.get("hold_duration_s", 0.0))
         e_total = float(row["energy_j"])
-        e_turn = e_total - p_translate(v_g) * d_pred / max(v_g, 1e-6)
+        distance_m = float(row["distance_m"])
+        duration_s = float(row["duration_s"])
+        cruise_time = max(duration_s - hold_s, 1e-6)
+        v_cruise = distance_m / cruise_time
+        e_predicted_straight = (
+            p_translate(v_cruise) * distance_m / max(v_cruise, 1e-6)
+        )
+        e_turn = e_total - e_predicted_straight
         points.setdefault((v_g, omega), []).append((delta, e_turn))
 
     keys = sorted(points.keys())
@@ -365,12 +462,20 @@ def fit_all(
     straight_rows = _read_csv_rows(data_dir / "straight_line.csv")
     turn_rows = _read_csv_rows(data_dir / "turns.csv")
 
-    n_excluded_total = 0
-    straight_rows, n_ex = _filter_passed(straight_rows)
-    n_excluded_total += n_ex
-    turn_rows, n_ex = _filter_passed(turn_rows)
-    n_excluded_total += n_ex
-    # Hover trials have expected_speed_mps=0 → speed check disabled, all kept.
+    # We don't drop trials based on passed_speed_check anymore. PX4 SITL's
+    # trajectory smoother caps actual cruise below commanded at higher v_g,
+    # so a non-trivial fraction of rows would otherwise be tossed.
+    # - Straight-line fit uses mean_speed_mps (measured), so a "v=12" trial
+    #   that actually flew 8.5 m/s is just one more (8.5, P) sample.
+    # - Turn fit subtracts the straight-line component using the trial's
+    #   actual cruise speed (extracted from distance_m / (duration_s -
+    #   hold_duration_s)), so a capped trial still subtracts the right
+    #   energy and contributes correct E_turn.
+    # - Hover: expected_speed_mps=0 disables the speed check anyway.
+    n_excluded_total = sum(
+        1 for r in (straight_rows + turn_rows)
+        if r["passed_speed_check"].lower() != "true"
+    )
 
     straight_fit = fit_straight_line(straight_rows, hover_rows)
     turn_fit = fit_turn(turn_rows, straight_fit)
@@ -395,6 +500,10 @@ def fit_all(
     _make_p_translate_plot(
         straight_rows, hover_rows, straight_fit,
         output_dir / "plots" / "p_translate.png",
+    )
+    _make_hover_plot(
+        hover_rows, straight_fit,
+        output_dir / "plots" / "hover.png",
     )
     _make_e_turn_plot(
         turn_rows, straight_fit, turn_fit,
