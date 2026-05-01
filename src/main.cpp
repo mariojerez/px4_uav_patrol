@@ -25,7 +25,7 @@ using ExecutePatrol = shepherding_msgs::action::ExecutePatrol;
 using GoalHandleExecutePatrol = rclcpp_action::ServerGoalHandle<ExecutePatrol>;
 
 static const char * kNodeName = "patrol_mission";
-static const char * kActionName = "execute_patrol";   // resolves to ./execute_patrol under the node namespace
+static const char * kActionName = "execute_patrol";   // resolves to /execute_patrol at the node's namespace (default "/")
 static const bool kEnableDebugOutput = true;
 
 class PatrolActionServer
@@ -120,7 +120,9 @@ private:
         }
       }
 
-      if (!patrol_.start(mission_path, error)) {
+      if (!patrol_.start(mission_path, error,
+            goal->per_leg_meta_file, goal->auto_arm))
+      {
         RCLCPP_ERROR(node_->get_logger(),
           "Failed to start patrol: %s", error.c_str());
         auto result = std::make_shared<ExecutePatrol::Result>();

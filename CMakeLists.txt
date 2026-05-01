@@ -40,6 +40,18 @@ install(DIRECTORY include/
   DESTINATION include
 )
 
+# Calibration suite: pure-Python mission generator, runner, fitter, and SRS
+# updater. Installed under share/ so launch files and the runner can locate
+# them via ament_index_python.get_package_share_directory().
+install(DIRECTORY calibration/
+  DESTINATION share/${PROJECT_NAME}/calibration
+  FILES_MATCHING PATTERN "*.py"
+)
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch
+  FILES_MATCHING PATTERN "*.launch.py"
+)
+
 if(BUILD_TESTING)
   # NOTE: ament_lint_auto is intentionally not invoked for this package.
   # The pre-existing sources (`gen_patrol_mission.py`, `energy_logger.hpp`)
@@ -48,6 +60,34 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_patrol_logic test/test_patrol_logic.cpp)
   target_include_directories(test_patrol_logic PRIVATE include)
+
+  # EnergyLogger snapshot-mode tests need rclcpp + px4_msgs (for the message
+  # types in the synthetic injections) + px4_ros2_cpp (for the bundled
+  # nlohmann/json header used by the meta JSON parser).
+  ament_add_gtest(test_energy_logger_snapshot
+    test/test_energy_logger_snapshot.cpp
+    ENV "CYCLONEDDS_URI=")
+  target_include_directories(test_energy_logger_snapshot PRIVATE include)
+  ament_target_dependencies(test_energy_logger_snapshot
+    rclcpp
+    px4_msgs
+    px4_ros2_cpp
+  )
+
+  # Python tests for the calibration suite. Reuses pytest, no rclpy needed.
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_gen_calibration_missions
+    test/test_gen_calibration_missions.py
+    TIMEOUT 60
+  )
+  ament_add_pytest_test(test_fit_energy_constants
+    test/test_fit_energy_constants.py
+    TIMEOUT 120
+  )
+  ament_add_pytest_test(test_update_srs
+    test/test_update_srs.py
+    TIMEOUT 30
+  )
 endif()
 
 ament_package()
