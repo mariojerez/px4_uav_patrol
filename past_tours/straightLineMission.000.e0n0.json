@@ -1,0 +1,12 @@
+{
+  "name": "straightLineMission",
+  "comment": "A line with 2 waypoints where first waypoint is at center  Cost scaling=100, wind=(0.0, 0.0).",
+  "gtsp_file": "./GLKH-1.1/GTSPLIB/straightLineMission.gtsp",
+  "cost": 104.76,
+  "tour": [
+    1,
+    2
+  ],
+  "saved_at": "2026-2-24T16:27:00Z",
+  "generation_time": 24.89
+}
